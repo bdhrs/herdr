@@ -110,6 +110,10 @@ pub(super) fn pane_split(params: PaneSplitParams) -> std::io::Result<i32> {
     print_method_response("cli:pane:split", Method::PaneSplit(params))
 }
 
+pub(super) fn pane_stack(params: crate::api::schema::PaneStackParams) -> std::io::Result<i32> {
+    print_method_response("cli:pane:stack", Method::PaneStack(params))
+}
+
 pub(super) fn pane_swap(params: PaneSwapParams) -> std::io::Result<i32> {
     print_method_response("cli:pane:swap", Method::PaneSwap(params))
 }

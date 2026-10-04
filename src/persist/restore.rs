@@ -153,6 +153,7 @@ fn collect_snapshot_ids_inner(node: &LayoutSnapshot, ids: &mut Vec<u32>) {
             collect_snapshot_ids_inner(first, ids);
             collect_snapshot_ids_inner(second, ids);
         }
+        LayoutSnapshot::Stack { panes, .. } => ids.extend(panes.iter().copied()),
     }
 }
 
@@ -182,6 +183,7 @@ fn collect_layout_snapshot_pane_ids(node: &LayoutSnapshot, ids: &mut Vec<u32>) {
             collect_layout_snapshot_pane_ids(first, ids);
             collect_layout_snapshot_pane_ids(second, ids);
         }
+        LayoutSnapshot::Stack { panes, .. } => ids.extend(panes.iter().copied()),
     }
 }
 
@@ -944,6 +946,25 @@ pub(super) fn prune_restored_node(node: Node, surviving: &HashSet<PaneId>) -> Op
                 (None, None) => None,
             }
         }
+        Node::Stack { panes, active } => {
+            let kept: Vec<PaneId> = panes
+                .iter()
+                .copied()
+                .filter(|id| surviving.contains(id))
+                .collect();
+            let active = panes[..active.min(panes.len())]
+                .iter()
+                .filter(|id| surviving.contains(id))
+                .count();
+            match kept.len() {
+                0 => None,
+                1 => Some(Node::Pane(kept[0])),
+                len => Some(Node::Stack {
+                    panes: kept,
+                    active: active.min(len - 1),
+                }),
+            }
+        }
     }
 }
 
@@ -993,6 +1014,28 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
                 second: Box::new(second_node),
             }
         }
+        LayoutSnapshot::Stack { panes, active } => {
+            let remapped: Vec<PaneId> = panes
+                .iter()
+                .map(|old_id| {
+                    let new_id = PaneId::alloc();
+                    id_map.insert(*old_id, new_id);
+                    new_id
+                })
+                .collect();
+            match remapped.len() {
+                // A saved stack should never hold fewer than two panes, but a
+                // hand-edited or truncated snapshot must not produce an invalid tree.
+                // Nothing was remapped, so there is no pane to name; the placeholder is
+                // dropped by the pruning pass because it has no restored pane state.
+                0 => Node::Pane(PaneId::from_raw(0)),
+                1 => Node::Pane(remapped[0]),
+                len => Node::Stack {
+                    panes: remapped,
+                    active: (*active).min(len - 1),
+                },
+            }
+        }
     }
 }
 
@@ -1009,6 +1052,7 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
             collect_ids_inner(first, ids);
             collect_ids_inner(second, ids);
         }
+        Node::Stack { panes, .. } => ids.extend(panes.iter().copied()),
     }
 }
 
@@ -1056,6 +1100,42 @@ mod tests {
         assert_eq!(ids.len(), 3);
         let unique: std::collections::HashSet<u32> = ids.iter().map(|id| id.raw()).collect();
         assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn prune_restored_node_drops_dead_stack_members_and_keeps_the_active_one_in_range() {
+        let ids: Vec<PaneId> = (31..=34).map(PaneId::from_raw).collect();
+        let node = Node::Stack {
+            panes: ids.clone(),
+            active: 3,
+        };
+        // The second and third members did not come back.
+        let surviving = std::collections::HashSet::from([ids[0], ids[3]]);
+
+        let pruned = prune_restored_node(node, &surviving).expect("two members survive");
+
+        let Node::Stack { panes, active } = pruned else {
+            panic!("expected a stack");
+        };
+        assert_eq!(panes, vec![ids[0], ids[3]]);
+        assert_eq!(
+            active, 1,
+            "the active member is still the one that survived"
+        );
+    }
+
+    #[test]
+    fn prune_restored_node_demotes_a_one_member_stack_to_a_plain_pane() {
+        let keep = PaneId::from_raw(41);
+        let node = Node::Stack {
+            panes: vec![keep, PaneId::from_raw(42)],
+            active: 1,
+        };
+        let surviving = std::collections::HashSet::from([keep]);
+
+        let pruned = prune_restored_node(node, &surviving).expect("one member survives");
+
+        assert!(matches!(pruned, Node::Pane(id) if id == keep));
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub(crate) fn collect_retained(
                 scrollbar_rect: pane.scrollbar_rect.map(rect),
                 borders: ratatui::widgets::Borders::NONE,
                 is_focused: pane.focused,
+                stack: None,
             })
         })
         .collect::<Option<Vec<_>>>()?;

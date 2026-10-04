@@ -390,11 +390,14 @@ pub struct Keybinds {
     pub swap_pane_down: ActionKeybinds,
     pub swap_pane_up: ActionKeybinds,
     pub swap_pane_right: ActionKeybinds,
+    pub move_stack_pane_up: ActionKeybinds,
+    pub move_stack_pane_down: ActionKeybinds,
     pub cycle_pane_next: ActionKeybinds,
     pub cycle_pane_previous: ActionKeybinds,
     pub last_pane: ActionKeybinds,
     pub split_vertical: ActionKeybinds,
     pub split_horizontal: ActionKeybinds,
+    pub stack_pane: ActionKeybinds,
     pub close_pane: ActionKeybinds,
     pub zoom: ActionKeybinds,
     pub resize_mode: ActionKeybinds,
@@ -573,11 +576,14 @@ impl Config {
             swap_pane_down: empty_action!(),
             swap_pane_up: empty_action!(),
             swap_pane_right: empty_action!(),
+            move_stack_pane_up: empty_action!(),
+            move_stack_pane_down: empty_action!(),
             cycle_pane_next: empty_action!(),
             cycle_pane_previous: empty_action!(),
             last_pane: empty_action!(),
             split_vertical: empty_action!(),
             split_horizontal: empty_action!(),
+            stack_pane: empty_action!(),
             close_pane: empty_action!(),
             zoom: empty_action!(),
             resize_mode: empty_action!(),
@@ -721,11 +727,14 @@ impl Config {
             apply_action!(keybinds.swap_pane_down, swap_pane_down, source);
             apply_action!(keybinds.swap_pane_up, swap_pane_up, source);
             apply_action!(keybinds.swap_pane_right, swap_pane_right, source);
+            apply_action!(keybinds.move_stack_pane_up, move_stack_pane_up, source);
+            apply_action!(keybinds.move_stack_pane_down, move_stack_pane_down, source);
             apply_action!(keybinds.last_pane, last_pane, source);
             apply_action!(keybinds.cycle_pane_next, cycle_pane_next, source);
             apply_action!(keybinds.cycle_pane_previous, cycle_pane_previous, source);
             apply_action!(keybinds.split_vertical, split_vertical, source);
             apply_action!(keybinds.split_horizontal, split_horizontal, source);
+            apply_action!(keybinds.stack_pane, stack_pane, source);
             apply_action!(keybinds.close_pane, close_pane, source);
             apply_action!(keybinds.zoom, zoom, source);
             apply_action!(keybinds.resize_mode, resize_mode, source);
@@ -1701,6 +1710,28 @@ next_tab = "prefix+n"
     fn back_and_forth_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.last_pane.bindings.is_empty());
+    }
+
+    /// `stack_pane` was named `split_stacked` until a stack stopped being
+    /// described as a kind of split. Configs written against the old name must
+    /// keep working rather than silently losing the binding.
+    #[test]
+    fn stack_pane_still_accepts_the_split_stacked_alias() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+split_stacked = "alt+s"
+"#,
+        )
+        .unwrap();
+        let kb = config.keybinds();
+        assert_eq!(
+            binding_triggers(&kb.stack_pane),
+            vec![BindingTrigger::Direct((
+                KeyCode::Char('s'),
+                KeyModifiers::ALT
+            ))]
+        );
     }
 
     #[test]

@@ -70,6 +70,8 @@ pub(crate) enum NewPanePlacement {
         direction: Direction,
         ratio: f32,
     },
+    /// The pane created by stacking onto `target` in workspace `ws_idx`.
+    Stacked { ws_idx: usize, target: PaneId },
     /// A pane split off and immediately zoomed over its tab.
     ZoomedOverlay,
     /// An existing pane in workspace `ws_idx` getting a new terminal.
@@ -90,7 +92,7 @@ pub(crate) fn new_pane_terminal_size(
             app.pane_gaps,
             app.pane_outer_borders,
         );
-        pane_inner_rect(infos[index].rect, infos[index].borders)
+        pane_sizing_rect(&infos[index])
     };
     // A lone pane has no neighbors, so its chrome matches a zoomed single pane.
     let alone = || pane_inner_rect(area, zoomed_pane_borders(app, false));
@@ -121,6 +123,10 @@ pub(crate) fn new_pane_terminal_size(
             .and_then(|tab| tab.layout.panes_after_split(area, target, direction, ratio))
             .map(|(panes, new_index)| laid_out(panes, new_index))
             .unwrap_or_else(alone),
+        NewPanePlacement::Stacked { ws_idx, target } => tab_for(ws_idx, target)
+            .and_then(|tab| tab.layout.panes_after_stack(area, target))
+            .map(|(panes, new_index)| laid_out(panes, new_index))
+            .unwrap_or_else(alone),
     };
     new_terminal_size(app, pane_inner)
 }
@@ -139,7 +145,7 @@ pub(crate) fn new_layout_terminal_sizes(
         app.pane_outer_borders,
     )
     .into_iter()
-    .map(|info| new_terminal_size(app, pane_inner_rect(info.rect, info.borders)))
+    .map(|info| new_terminal_size(app, pane_sizing_rect(&info)))
     .collect()
 }
 
@@ -164,26 +170,31 @@ fn ranges_overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> bool {
     a_start < b_start.saturating_add(b_len) && b_start < a_start.saturating_add(a_len)
 }
 
+/// The rect chrome is decided for: a stacked pane is placed by the region its stack
+/// occupies rather than by its own row.
+fn chrome_rect(info: &PaneInfo) -> Rect {
+    info.stack.map_or(info.rect, |slot| slot.region_rect)
+}
+
 fn pane_to_right<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo> {
-    let right = info.rect.x.saturating_add(info.rect.width);
+    let rect = chrome_rect(info);
+    let right = rect.x.saturating_add(rect.width);
     panes.iter().find(|other| {
+        let other_rect = chrome_rect(other);
         other.id != info.id
-            && other.rect.x == right
-            && ranges_overlap(
-                info.rect.y,
-                info.rect.height,
-                other.rect.y,
-                other.rect.height,
-            )
+            && other_rect.x == right
+            && ranges_overlap(rect.y, rect.height, other_rect.y, other_rect.height)
     })
 }
 
 fn pane_below<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo> {
-    let bottom = info.rect.y.saturating_add(info.rect.height);
+    let rect = chrome_rect(info);
+    let bottom = rect.y.saturating_add(rect.height);
     panes.iter().find(|other| {
+        let other_rect = chrome_rect(other);
         other.id != info.id
-            && other.rect.y == bottom
-            && ranges_overlap(info.rect.x, info.rect.width, other.rect.x, other.rect.width)
+            && other_rect.y == bottom
+            && ranges_overlap(rect.x, rect.width, other_rect.x, other_rect.width)
     })
 }
 
@@ -215,19 +226,28 @@ pub(crate) fn apply_pane_chrome(
         .map(|info| info.rect.y.saturating_add(info.rect.height))
         .max()
         .unwrap_or(0);
-    panes
+    let mut chromed: Vec<PaneInfo> = panes
         .iter()
         .cloned()
         .map(|mut info| {
             let right_neighbor = multi_pane.then(|| pane_to_right(&info, &panes)).flatten();
             let below_neighbor = multi_pane.then(|| pane_below(&info, &panes)).flatten();
+            // Borders are decided for the region of a whole stack, so every member ends
+            // up with the same chrome.
+            let rect = chrome_rect(&info);
 
             if multi_pane && pane_gaps && !pane_borders.draws_borders() {
+                // A stack takes no gap between its own members; the gap belongs to the
+                // region, which the members are laid out inside afterwards.
+                let gapped = match info.stack.as_mut() {
+                    Some(slot) => &mut slot.region_rect,
+                    None => &mut info.rect,
+                };
                 if right_neighbor.is_some() {
-                    info.rect.width = shrink_for_one_cell_gap(info.rect.width);
+                    gapped.width = shrink_for_one_cell_gap(gapped.width);
                 }
                 if below_neighbor.is_some() {
-                    info.rect.height = shrink_for_one_cell_gap(info.rect.height);
+                    gapped.height = shrink_for_one_cell_gap(gapped.height);
                 }
             }
 
@@ -244,16 +264,16 @@ pub(crate) fn apply_pane_chrome(
                     }
                 }
                 if !pane_outer_borders {
-                    if info.rect.x == outer_left {
+                    if rect.x == outer_left {
                         borders.remove(Borders::LEFT);
                     }
-                    if info.rect.y == outer_top {
+                    if rect.y == outer_top {
                         borders.remove(Borders::TOP);
                     }
-                    if info.rect.x.saturating_add(info.rect.width) == outer_right {
+                    if rect.x.saturating_add(rect.width) == outer_right {
                         borders.remove(Borders::RIGHT);
                     }
-                    if info.rect.y.saturating_add(info.rect.height) == outer_bottom {
+                    if rect.y.saturating_add(rect.height) == outer_bottom {
                         borders.remove(Borders::BOTTOM);
                     }
                 }
@@ -261,7 +281,105 @@ pub(crate) fn apply_pane_chrome(
             };
             info
         })
-        .collect()
+        .collect();
+
+    relayout_stacks_inside_chrome(&mut chromed);
+    chromed
+}
+
+/// Re-fit every stack's members inside the chrome its region was given.
+///
+/// Chrome is derived from neighbour geometry, so applying it per member would give
+/// the top, middle and bottom of a stack different borders — and therefore different
+/// terminal heights as the active member moves. Instead the stack gets one box around
+/// the whole region, carried by the active member so the existing border-joining code
+/// draws and joins it exactly like any other pane's. Collapsed members are plain rows
+/// inside that box with no chrome of their own, and every member's terminal is sized
+/// to the same content rect.
+fn relayout_stacks_inside_chrome(panes: &mut [PaneInfo]) {
+    // This runs for every view computation on every attached client, so a layout
+    // without stacks must cost one scan and no allocation.
+    if panes.iter().all(|info| info.stack.is_none()) {
+        return;
+    }
+
+    let mut regions: Vec<Rect> = Vec::new();
+    for info in panes.iter() {
+        if let Some(slot) = info.stack {
+            if !regions.contains(&slot.region_rect) {
+                regions.push(slot.region_rect);
+            }
+        }
+    }
+
+    for region in regions {
+        let members: Vec<usize> = panes
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| info.stack.is_some_and(|slot| slot.region_rect == region))
+            .map(|(index, _)| index)
+            .collect();
+        let Some(&first) = members.first() else {
+            continue;
+        };
+        // A region with no rows has no top border to reclaim; widening the band anyway
+        // would hand the first member a title row belonging to a neighbouring pane.
+        if region.height == 0 {
+            continue;
+        }
+        // Every member got the same chrome because it was decided for the region.
+        let borders = panes[first].borders;
+        let active = members
+            .iter()
+            .position(|index| panes[*index].stack.is_some_and(|slot| !slot.collapsed))
+            .unwrap_or(0);
+        let inner = pane_inner_rect(region, borders);
+        // The first member's title row is the region's own top border, so a stack costs
+        // one row less than a box plus a row per member and the title sits on the frame.
+        let band = if borders.contains(Borders::TOP) {
+            Rect::new(
+                inner.x,
+                region.y,
+                inner.width,
+                inner.height.saturating_add(1),
+            )
+        } else {
+            inner
+        };
+        let heights = crate::layout::stack_heights(band.height, members.len(), active);
+        let content_rect = crate::layout::stack_content_rect(band, &heights, active).0;
+
+        let mut y = band.y;
+        for (position, &index) in members.iter().enumerate() {
+            let height = heights[position];
+            let rect = Rect::new(band.x, y, band.width, height);
+            y = y.saturating_add(height);
+            let is_active = position == active;
+            let info = &mut panes[index];
+            // The active member owns the region's box; collapsed rows sit inside it.
+            info.rect = if is_active { region } else { rect };
+            info.borders = if is_active { borders } else { Borders::NONE };
+            if let Some(slot) = info.stack.as_mut() {
+                slot.collapsed = !is_active;
+                slot.index = position;
+                slot.header_rect = Rect::new(band.x, rect.y, band.width, height.min(1));
+                slot.content_rect = content_rect;
+                slot.region_borders = borders;
+            }
+        }
+    }
+}
+
+/// The rect a pane's terminal is sized to.
+///
+/// For a stacked pane this is the region the active member occupies, already inside
+/// the stack's chrome — so every member of a stack reports the same size and cycling
+/// the stack resizes nothing.
+fn pane_sizing_rect(info: &PaneInfo) -> Rect {
+    match info.stack {
+        Some(slot) => slot.content_rect,
+        None => pane_inner_rect(info.rect, info.borders),
+    }
 }
 
 fn runtime_for_tab_pane<'a>(
@@ -346,7 +464,7 @@ pub(super) fn resize_tab_panes(
         app.pane_gaps,
         app.pane_outer_borders,
     ) {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
+        let pane_inner = pane_sizing_rect(&info);
 
         if let Some((terminal_id, rt)) =
             runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
@@ -413,6 +531,7 @@ pub(super) fn compute_pane_infos_for_tab(
             scrollbar_rect,
             borders,
             is_focused: true,
+            stack: None,
         }];
     }
 
@@ -423,8 +542,10 @@ pub(super) fn compute_pane_infos_for_tab(
         app.pane_outer_borders,
     );
 
+    // Every member of a stack is sized to the region the active member occupies, so
+    // cycling a stack never resizes a PTY and collapsed agents keep their screen.
     for info in &mut pane_infos {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
+        let pane_inner = pane_sizing_rect(info);
 
         let mut inner_rect = pane_inner;
         let mut scrollbar_rect = None;
@@ -445,8 +566,21 @@ pub(super) fn compute_pane_infos_for_tab(
             }
         }
 
-        info.inner_rect = inner_rect;
-        info.scrollbar_rect = scrollbar_rect;
+        if let Some(slot) = info.stack.filter(|slot| slot.collapsed) {
+            // A collapsed member shows only its title row and has no content rows.
+            // Clients forward clicks inside `inner_rect` to the pane's program and the
+            // retained renderer patches it, so it must be empty, not the title row.
+            info.inner_rect = Rect::new(
+                slot.header_rect.x,
+                slot.header_rect.y,
+                slot.header_rect.width,
+                0,
+            );
+            info.scrollbar_rect = None;
+        } else {
+            info.inner_rect = inner_rect;
+            info.scrollbar_rect = scrollbar_rect;
+        }
     }
 
     pane_infos
@@ -498,6 +632,11 @@ pub(super) fn render_panes(
     };
 
     for info in pane_infos {
+        // A collapsed stack member shows a title row instead of its terminal, even
+        // though its PTY stays full size behind the row.
+        if info.stack.is_some_and(|slot| slot.collapsed) {
+            continue;
+        }
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             let show_cursor = info.is_focused
                 && !pane_is_scrolled_back(rt)
@@ -519,6 +658,188 @@ pub(super) fn render_panes(
     }
 
     render_pane_borders(app, ws, pane_infos, split_borders, frame);
+    render_stack_bars(app, ws, pane_infos, frame);
+}
+
+/// The name drawn on a stack member's title row.
+fn stack_bar_label(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    info: &PaneInfo,
+    slot: crate::layout::StackSlot,
+) -> String {
+    // A title row is the only name a collapsed pane has, so fall back past the pane
+    // name to the agent type before resorting to a positional name.
+    let terminal = ws
+        .pane_state(info.id)
+        .and_then(|pane| app.terminals.get(&pane.attached_terminal_id));
+    terminal
+        .and_then(|terminal| terminal.display_name())
+        .or_else(|| {
+            terminal
+                .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+        })
+        .unwrap_or_else(|| match ws.public_pane_number(info.id) {
+            Some(number) => format!("pane {number}"),
+            None => format!("pane {}", slot.index + 1),
+        })
+}
+
+/// The text of a stack member's title row and the cells it may use, starting one cell
+/// in from the row's left edge. `None` when the row has no room for a name.
+pub(crate) fn stack_bar_title(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    info: &PaneInfo,
+    available: usize,
+) -> Option<String> {
+    let slot = info.stack?;
+    // A member's title row is the only place its name appears, so a narrow stack
+    // drops the spacing rather than the name.
+    let padding = if available > STACK_BAR_TITLE_PADDING {
+        STACK_BAR_TITLE_PADDING
+    } else {
+        STACK_BAR_MARKER_WIDTH
+    };
+    if available <= padding {
+        return None;
+    }
+    let label = stack_bar_label(app, ws, info, slot);
+    let marker = if slot.collapsed { '▸' } else { '▾' };
+    let name = truncate_end(label.trim(), available.saturating_sub(padding));
+    Some(if padding == STACK_BAR_TITLE_PADDING {
+        format!(" {marker} {name} ")
+    } else {
+        format!("{marker} {name}")
+    })
+}
+
+/// The cells a stack member's title text covers on its title row, when that row is
+/// the region's top border and so shares its cells with a split resize handle.
+pub(crate) fn stack_border_title_span(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    info: &PaneInfo,
+) -> Option<(u16, u16)> {
+    let slot = info.stack?;
+    let row = slot.header_rect;
+    if row.height == 0 || row.y != slot.region_rect.y || !slot.region_borders.contains(Borders::TOP)
+    {
+        return None;
+    }
+    let start_x = row.x.saturating_add(1);
+    let available = row.x.saturating_add(row.width).saturating_sub(start_x) as usize;
+    let title = stack_bar_title(app, ws, info, available)?;
+    let width = super::text::display_width(&title).min(available) as u16;
+    Some((start_x, start_x.saturating_add(width)))
+}
+
+/// Draw the title row every stack member carries, the visible one included.
+fn render_stack_bars(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    pane_infos: &[PaneInfo],
+    frame: &mut Frame,
+) {
+    let buf = frame.buffer_mut();
+    let buf_area = buf.area;
+    for info in pane_infos {
+        let Some(slot) = info.stack else {
+            continue;
+        };
+        let row = slot.header_rect;
+        if row.width == 0 || row.height == 0 {
+            continue;
+        }
+        if row.y < buf_area.y || row.y >= buf_area.y.saturating_add(buf_area.height) {
+            continue;
+        }
+        if row.x < buf_area.x {
+            continue;
+        }
+        let end_x = row
+            .x
+            .saturating_add(row.width)
+            .min(buf_area.x.saturating_add(buf_area.width));
+        if row.x >= end_x {
+            continue;
+        }
+
+        let style = stack_bar_style(&app.palette, slot.collapsed);
+        let region = slot.region_rect;
+        // The first member's row is the region's own top border, already drawn by the
+        // border pass — as a rule, and at junctions with a neighbouring split as `┬`
+        // or `┴`. That row is shared with the pane above, so redrawing or recolouring
+        // it would erase a junction and repaint another pane's edge. Only the title
+        // text goes there. Every other row belongs to the stack alone: it is ruled and
+        // opens its own corner, which is what makes a stack read as a deck of cards
+        // rather than as one pane chopped into strips.
+        if !slot.region_borders.contains(Borders::TOP) || row.y != region.y {
+            for x in row.x..end_x {
+                let cell = &mut buf[(x, row.y)];
+                cell.reset();
+                cell.set_symbol("─");
+                cell.set_style(style);
+            }
+
+            let right_x = region.x.saturating_add(region.width).saturating_sub(1);
+            for (x, side, joint) in [
+                (region.x, Borders::LEFT, "┌"),
+                (right_x, Borders::RIGHT, "┐"),
+            ] {
+                if !slot.region_borders.contains(side)
+                    || x < buf_area.x
+                    || x >= buf_area.x.saturating_add(buf_area.width)
+                {
+                    continue;
+                }
+                let cell = &mut buf[(x, row.y)];
+                cell.set_symbol(joint);
+                cell.set_style(style);
+            }
+        }
+
+        // The rule runs edge to edge with the name inset by one, so a title row reads
+        // as a frame line rather than a row of text: `┌─ ▸ name ─────┐`.
+        let start_x = row.x.saturating_add(1);
+        let available = end_x.saturating_sub(start_x) as usize;
+        let Some(title) = stack_bar_title(app, ws, info, available) else {
+            continue;
+        };
+        buf.set_stringn(start_x, row.y, title, available, style);
+    }
+}
+
+/// Cells `▸ name` spends on everything but the name itself.
+const STACK_BAR_MARKER_WIDTH: usize = 2;
+
+/// Cells ` ▸ name ` spends on everything but the name itself.
+const STACK_BAR_TITLE_PADDING: usize = 4;
+
+/// How much of the panel background is mixed into the accent for a collapsed member's
+/// title row. Tuned by eye against Catppuccin Mocha; one number to change.
+const COLLAPSED_STACK_BAR_MUTE: f32 = 0.55;
+
+/// Colour of a stack member's title row.
+///
+/// The visible member takes the accent; a collapsed member takes a muted version of
+/// that same accent rather than the generic border grey, so a stack reads as one group
+/// of related panes instead of one live pane beside some dead ones.
+fn stack_bar_style(p: &Palette, collapsed: bool) -> Style {
+    if !collapsed {
+        return Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+    }
+    let muted = color_to_rgb(p.accent)
+        .zip(color_to_rgb(selection_palette_background(p)))
+        .map(|(accent, background)| {
+            let (r, g, b) = mix_rgb(accent, background, COLLAPSED_STACK_BAR_MUTE);
+            Color::Rgb(r, g, b)
+        });
+    match muted {
+        // A named or indexed accent has no channels to mix, so dim it instead.
+        Some(color) => Style::default().fg(color),
+        None => Style::default().fg(p.accent).add_modifier(Modifier::DIM),
+    }
 }
 
 pub(crate) fn popup_pane_rects(app: &AppState, area: Rect) -> Option<(Rect, Rect)> {
@@ -738,7 +1059,9 @@ fn render_pane_border_titles(
     let buf = frame.buffer_mut();
     let area = buf.area;
     for info in pane_infos {
-        if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
+        // A stack member is named by its own title row, which is drawn on the frame
+        // line itself; a border title here would repeat it one row above.
+        if info.stack.is_some() || !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
         let Some(title) = ws
@@ -1029,6 +1352,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::ALL,
             is_focused: false,
+            stack: None,
         }];
 
         let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
@@ -1213,6 +1537,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT,
                 is_focused: true,
+                stack: None,
             },
             PaneInfo {
                 id: PaneId::from_raw(2),
@@ -1221,6 +1546,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
                 is_focused: false,
+                stack: None,
             },
             PaneInfo {
                 id: PaneId::from_raw(3),
@@ -1229,6 +1555,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
                 is_focused: false,
+                stack: None,
             },
             PaneInfo {
                 id: PaneId::from_raw(4),
@@ -1237,6 +1564,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: false,
+                stack: None,
             },
         ];
         let split_borders = vec![
@@ -1283,6 +1611,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: true,
+                stack: None,
             },
             PaneInfo {
                 id: PaneId::from_raw(2),
@@ -1291,6 +1620,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: false,
+                stack: None,
             },
         ];
         let ws = Workspace::test_new("test");
@@ -1436,6 +1766,248 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+    }
+
+    #[tokio::test]
+    async fn cycling_a_stack_never_resizes_a_member_pty() {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("test");
+        let first = workspace.tabs[0].root_pane;
+        let second = workspace.test_stack();
+        let third = workspace.test_stack();
+        for pane in [first, second, third] {
+            workspace.tabs[0].runtimes.insert(
+                pane,
+                TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            );
+        }
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let area = Rect::new(0, 0, 40, 12);
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let sizes_after_focusing = |app: &mut AppState, focus: crate::layout::PaneId| {
+            app.workspaces[0].tabs[0].layout.focus_pane(focus);
+            compute_pane_infos(
+                app,
+                &terminal_runtimes,
+                area,
+                true,
+                crate::kitty_graphics::HostCellSize::default(),
+            );
+            [first, second, third]
+                .map(|pane| app.workspaces[0].tabs[0].runtimes[&pane].current_size())
+        };
+
+        let baseline = sizes_after_focusing(&mut app, first);
+        assert_eq!(
+            baseline, [baseline[0]; 3],
+            "every member is sized to the same region"
+        );
+        assert_eq!(sizes_after_focusing(&mut app, second), baseline);
+        assert_eq!(sizes_after_focusing(&mut app, third), baseline);
+        assert_eq!(sizes_after_focusing(&mut app, first), baseline);
+    }
+
+    #[tokio::test]
+    async fn collapsed_stack_members_get_one_row_and_the_active_member_gets_the_rest() {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("test");
+        let first = workspace.tabs[0].root_pane;
+        let second = workspace.test_stack();
+        for pane in [first, second] {
+            workspace.tabs[0].runtimes.insert(
+                pane,
+                TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            );
+        }
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 40, 12),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let collapsed = infos
+            .iter()
+            .find(|info| info.id == first)
+            .expect("first member present");
+        let active = infos
+            .iter()
+            .find(|info| info.id == second)
+            .expect("second member present");
+        assert_eq!(collapsed.rect.height, 1);
+        assert!(collapsed.stack.expect("stacked").collapsed);
+        // No content rows: a click or a retained patch must never reach the hidden
+        // terminal through its title row.
+        assert_eq!(collapsed.inner_rect.height, 0);
+        assert_eq!(collapsed.inner_rect.y, collapsed.rect.y);
+        assert_eq!(collapsed.scrollbar_rect, None);
+        assert_eq!(
+            collapsed.borders,
+            Borders::NONE,
+            "a title row carries no chrome of its own"
+        );
+
+        assert_eq!(
+            collapsed.stack.expect("stacked").header_rect.y,
+            collapsed.stack.expect("stacked").region_rect.y,
+            "the first member's title row is the region's own top border"
+        );
+
+        // The active member owns the box drawn around the whole stack, so its rect is
+        // the full region while its terminal occupies only the content rows: 12 rows,
+        // less the region's bottom border, less both members' title rows. The top
+        // border is not subtracted — it is the first member's title row.
+        let slot = active.stack.expect("stacked");
+        assert!(!slot.collapsed);
+        assert_eq!(active.rect, slot.region_rect);
+        assert_eq!(slot.content_rect.height, 9);
+        assert_eq!(active.inner_rect.height, 9);
+        assert_eq!(
+            slot.content_rect.y,
+            slot.header_rect.y + 1,
+            "the terminal starts on the row directly below its own title row"
+        );
+        assert!(
+            !slot
+                .header_rect
+                .intersects(collapsed.stack.expect("stacked").header_rect),
+            "each member has its own header row"
+        );
+        assert!(
+            !slot.content_rect.intersects(collapsed.rect),
+            "the terminal must not be drawn under a title row"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stack_without_a_top_border_keeps_every_title_row_inside_the_region() {
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("test");
+        let first = workspace.tabs[0].root_pane;
+        let second = workspace.test_stack();
+        for pane in [first, second] {
+            workspace.tabs[0].runtimes.insert(
+                pane,
+                TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            );
+        }
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        // Without outer borders the region has no top border row to spend on a title,
+        // so the stack simply keeps its rows inside and reclaims nothing.
+        app.pane_outer_borders = false;
+
+        let region = Rect::new(0, 0, 40, 12);
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            region,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let collapsed = infos
+            .iter()
+            .find(|info| info.id == first)
+            .expect("first member present")
+            .stack
+            .expect("stacked");
+        let active = infos
+            .iter()
+            .find(|info| info.id == second)
+            .expect("second member present")
+            .stack
+            .expect("stacked");
+
+        assert!(!active.region_borders.contains(Borders::TOP));
+        assert_eq!(
+            collapsed.header_rect.y, region.y,
+            "with no top border the first title row is the region's first row"
+        );
+        assert_eq!(
+            active.content_rect.height, 10,
+            "12 rows, less both title rows, and no border row to reclaim"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_title_row_is_a_muted_version_of_the_accent() {
+        let mut palette = Palette::catppuccin();
+        palette.accent = Color::Rgb(250, 179, 135);
+
+        let visible = stack_bar_style(&palette, false);
+        let collapsed = stack_bar_style(&palette, true);
+
+        assert_eq!(visible.fg, Some(palette.accent));
+        let Some(Color::Rgb(r, g, b)) = collapsed.fg else {
+            panic!("an rgb accent must mute to an rgb colour: {collapsed:?}");
+        };
+        assert_ne!(
+            collapsed.fg,
+            Some(palette.accent),
+            "a collapsed row must be distinguishable from the visible one"
+        );
+        assert!(
+            r < 250 && g < 179 && b > 37,
+            "the mute moves the accent toward the panel background, not to grey: \
+             {r},{g},{b}"
+        );
+        assert!(
+            !collapsed
+                .add_modifier
+                .contains(ratatui::style::Modifier::DIM),
+            "an rgb accent is mixed, never dimmed"
+        );
+    }
+
+    #[test]
+    fn an_unmixable_accent_falls_back_to_dimming() {
+        let mut palette = Palette::catppuccin();
+        palette.accent = Color::Indexed(208);
+
+        let collapsed = stack_bar_style(&palette, true);
+
+        assert_eq!(collapsed.fg, Some(Color::Indexed(208)));
+        assert!(collapsed
+            .add_modifier
+            .contains(ratatui::style::Modifier::DIM));
+    }
+
+    #[test]
+    fn a_stack_keeps_its_gap_when_borders_are_off() {
+        let (mut layout, root) = crate::layout::TileLayout::new();
+        let right = layout
+            .split_pane(root, Direction::Horizontal, 0.5)
+            .expect("root splits");
+        let stacked = layout.stack_pane(root).expect("root stacks");
+        layout.focus_pane(stacked);
+
+        let infos = apply_pane_chrome(
+            layout.panes(Rect::new(0, 0, 100, 40)),
+            PaneBordersConfig::Off,
+            true,
+            true,
+        );
+
+        let visible = infos
+            .iter()
+            .find(|info| info.id == stacked)
+            .expect("visible member");
+        let neighbour = infos
+            .iter()
+            .find(|info| info.id == right)
+            .expect("right pane");
+        assert_eq!(
+            visible.rect.right() + 1,
+            neighbour.rect.x,
+            "a one-cell gap separates the stack from its neighbour, as it does plain panes"
+        );
     }
 
     #[tokio::test]

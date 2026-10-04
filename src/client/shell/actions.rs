@@ -356,6 +356,7 @@ impl ClientShellState {
             crate::api::schema::Method::WorkspaceCreate(params) => params.focus,
             crate::api::schema::Method::TabCreate(params) => params.focus,
             crate::api::schema::Method::PaneSplit(params) => params.focus,
+            crate::api::schema::Method::PaneStack(params) => params.focus,
             _ => false,
         };
         if changes_focus {
@@ -1046,6 +1047,26 @@ impl ClientShellState {
                     env: Default::default(),
                 }))
             }
+            KeybindAction::StackPane => {
+                Some(Method::PaneStack(crate::api::schema::PaneStackParams {
+                    workspace_id: Some(focused_workspace),
+                    target_pane_id: focused_pane,
+                    cwd: None,
+                    focus: true,
+                    right_click: Default::default(),
+                    env: Default::default(),
+                }))
+            }
+            KeybindAction::MoveStackPaneUp | KeybindAction::MoveStackPaneDown => Some(
+                Method::PaneStackMove(crate::api::schema::PaneStackMoveParams {
+                    pane_id: focused_pane,
+                    delta: if action == KeybindAction::MoveStackPaneUp {
+                        -1
+                    } else {
+                        1
+                    },
+                }),
+            ),
             KeybindAction::ClosePane => Some(Method::PaneClose(PaneTarget {
                 pane_id: focused_pane.clone()?,
             })),

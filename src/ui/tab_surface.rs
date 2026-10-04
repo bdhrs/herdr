@@ -216,6 +216,213 @@ mod tests {
     use ratatui::layout::Direction;
     use ratatui::Terminal;
 
+    fn render_stack_surface(
+        app: &AppState,
+        area: Rect,
+    ) -> (TabSurfaceLayout, ratatui::buffer::Buffer) {
+        let surface = compute_tab_surface(
+            app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_tab_surface(
+                    app,
+                    &TerminalRuntimeRegistry::new(),
+                    TabSurfaceView {
+                        target: surface.target,
+                        pane_infos: &surface.pane_infos,
+                        split_borders: &surface.split_borders,
+                    },
+                    frame,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (surface, buffer)
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[tokio::test]
+    async fn a_stack_header_falls_back_to_the_terminals_own_title() {
+        let mut workspace = Workspace::test_new("stack-workspace");
+        let first = workspace.tabs[0].root_pane;
+        workspace.insert_test_runtime(
+            first,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"FIRST"),
+        );
+        let second = workspace.test_stack();
+        workspace.insert_test_runtime(
+            second,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"SECOND"),
+        );
+        let mut app = AppState::test_new();
+        // The collapsed member has no label and no agent — only the title its shell set.
+        let first_terminal_id = workspace
+            .terminal_id(first)
+            .expect("pane has a terminal")
+            .clone();
+        let mut terminal = crate::terminal::TerminalState::new(
+            first_terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        terminal.set_terminal_title(Some("~/projects/api".into()));
+        app.terminals.insert(first_terminal_id, terminal);
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let (_, buffer) = render_stack_surface(&app, Rect::new(0, 0, 106, 20));
+        let rendered = buffer_text(&buffer);
+
+        assert!(
+            rendered.contains("~/projects/api"),
+            "a header must show the terminal's title rather than a positional name: {rendered:?}"
+        );
+        assert!(
+            !rendered.contains("pane 1"),
+            "the positional name is a last resort: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stack_renders_the_active_terminal_and_a_title_row_per_collapsed_member() {
+        let mut workspace = Workspace::test_new("stack-workspace");
+        let first = workspace.tabs[0].root_pane;
+        workspace.insert_test_runtime(
+            first,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"FIRSTPANE"),
+        );
+        let second = workspace.test_stack();
+        workspace.insert_test_runtime(
+            second,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"SECONDPANE"),
+        );
+        let mut app = AppState::test_new();
+        // A manual label feeds both `display_name` and `border_label`, so it is the
+        // string that would be drawn twice if the border title were not suppressed.
+        let active_terminal_id = workspace
+            .terminal_id(second)
+            .expect("pane has a terminal")
+            .clone();
+        let mut terminal = crate::terminal::TerminalState::new(
+            active_terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        terminal.set_manual_label("orchestrator".into());
+        app.terminals.insert(active_terminal_id, terminal);
+        // A split beside the stack makes it a multi-pane tab, which is when borders
+        // and title rows are drawn on the frame.
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let area = Rect::new(0, 0, 106, 20);
+        let (surface, buffer) = render_stack_surface(&app, area);
+        let rendered = buffer_text(&buffer);
+        let row_text =
+            |y: u16| -> String { (0..area.width).map(|x| buffer[(x, y)].symbol()).collect() };
+
+        assert!(rendered.contains("SECONDPANE"), "{rendered:?}");
+        assert!(
+            !rendered.contains("FIRSTPANE"),
+            "a collapsed member's terminal must not be drawn: {rendered:?}"
+        );
+
+        let slot = |id| {
+            surface
+                .pane_infos
+                .iter()
+                .find(|info| info.id == id)
+                .expect("member present")
+                .stack
+                .expect("stacked")
+        };
+        let collapsed = slot(first);
+        let active = slot(second);
+        assert!(collapsed.collapsed && !active.collapsed);
+
+        assert!(
+            row_text(collapsed.header_rect.y).contains("▸ "),
+            "{:?}",
+            row_text(collapsed.header_rect.y)
+        );
+        assert!(
+            row_text(active.header_rect.y).contains("▾ orchestrator"),
+            "{:?}",
+            row_text(active.header_rect.y)
+        );
+        assert_eq!(
+            rendered.matches("orchestrator").count(),
+            1,
+            "the visible member is named once, on its own title row: {rendered:?}"
+        );
+
+        let collapsed_fg = buffer[(collapsed.header_rect.x + 2, collapsed.header_rect.y)].fg;
+        let active_fg = buffer[(active.header_rect.x + 2, active.header_rect.y)].fg;
+        assert_ne!(
+            collapsed_fg, active_fg,
+            "a collapsed title row is a muted version of the visible one's accent"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bordered_stack_opens_a_corner_on_every_title_row_below_the_top() {
+        let mut workspace = Workspace::test_new("stack-workspace");
+        let first = workspace.tabs[0].root_pane;
+        let beside = workspace.test_split(Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(first);
+        let second = workspace.test_stack();
+        for (pane, text) in [(first, b"A" as &[u8]), (beside, b"B"), (second, b"C")] {
+            workspace.insert_test_runtime(
+                pane,
+                crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, text),
+            );
+        }
+        let mut app = AppState::test_new();
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+
+        let area = Rect::new(0, 0, 80, 20);
+        let (surface, buffer) = render_stack_surface(&app, area);
+        let row_text =
+            |y: u16| -> String { (0..area.width).map(|x| buffer[(x, y)].symbol()).collect() };
+        let slot = |id| {
+            surface
+                .pane_infos
+                .iter()
+                .find(|info| info.id == id)
+                .expect("member present")
+                .stack
+                .expect("stacked")
+        };
+
+        let top = slot(first);
+        let lower = slot(second);
+        assert_eq!(
+            top.header_rect.y, top.region_rect.y,
+            "the first title row is the region's own top border"
+        );
+        assert!(
+            row_text(top.header_rect.y).starts_with("┌─ ▸ "),
+            "{:?}",
+            row_text(top.header_rect.y)
+        );
+        assert!(
+            row_text(lower.header_rect.y).starts_with("┌─ ▾ "),
+            "every member opens its own corner, so a stack reads as a deck: {:?}",
+            row_text(lower.header_rect.y)
+        );
+    }
+
     #[tokio::test]
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {
         let uri = "https://example.com/surface";

@@ -375,6 +375,39 @@ fn context_menus_capture_stable_targets_and_route_actions() {
             if params.target_pane_id.as_deref() == Some("pane_1")
                 && params.direction == crate::api::schema::SplitDirection::Right
     ));
+
+    state.compose(106, 20).expect("composed frame");
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: pane.x + 1,
+        row: pane.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.compose(106, 20).expect("pane context menu");
+    let stack_index = match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .iter()
+            .position(|item| item.action == ClientContextMenuAction::Stack)
+            .expect("the pane menu offers stacking"),
+        _ => panic!("pane context menu"),
+    };
+    let stack = state.hits.context_menu_rows[stack_index].0;
+    let outcome =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: stack.x + 1,
+            row: stack.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+        panic!("pane stack context action should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::PaneStack(params)
+            if params.target_pane_id.as_deref() == Some("pane_1") && params.focus
+    ));
 }
 
 #[test]

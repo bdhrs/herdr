@@ -2709,6 +2709,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pane_stack_request_stacks_onto_the_target_and_focuses_the_new_member() {
+        let _guard = config_env_lock().lock().unwrap();
+        let original_shell = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", exiting_test_command());
+
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("api-pane-stack")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let root_id = app.pane_info(0, root).unwrap().pane_id;
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_stack".into(),
+            method: crate::api::schema::Method::PaneStack(crate::api::schema::PaneStackParams {
+                workspace_id: None,
+                target_pane_id: Some(root_id),
+                cwd: None,
+                focus: true,
+                right_click: Default::default(),
+                env: Default::default(),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["result"]["type"], "pane_info", "{response}");
+        assert_eq!(response["result"]["pane"]["focused"], true);
+        let layout = &app.state.workspaces[0].tabs[0].layout;
+        let panes = layout.panes(ratatui::layout::Rect::new(0, 0, 80, 24));
+        assert_eq!(panes.len(), 2);
+        assert!(
+            panes.iter().all(|info| info.stack.is_some()),
+            "both panes share one stack instead of a split"
+        );
+        let visible: Vec<_> = panes
+            .iter()
+            .filter(|info| !info.stack.unwrap().collapsed)
+            .map(|info| info.id)
+            .collect();
+        assert_eq!(visible, vec![layout.focused()]);
+        assert_ne!(layout.focused(), root);
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
+        match original_shell {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    fn stack_move(app: &mut App, delta: i32) -> serde_json::Value {
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_stack_move".into(),
+            method: crate::api::schema::Method::PaneStackMove(
+                crate::api::schema::PaneStackMoveParams {
+                    pane_id: None,
+                    delta,
+                },
+            ),
+        });
+        serde_json::from_str(&response).unwrap()
+    }
+
+    fn app_with_focused_stack() -> (App, Vec<crate::layout::PaneId>) {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("api-stack-move");
+        let root = workspace.tabs[0].root_pane;
+        let second = workspace.test_stack();
+        let third = workspace.test_stack();
+        workspace.tabs[0].layout.focus_pane(second);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        (app, vec![root, second, third])
+    }
+
+    #[tokio::test]
+    async fn pane_stack_move_reorders_within_the_stack_and_keeps_focus() {
+        let (mut app, ids) = app_with_focused_stack();
+
+        let response = stack_move(&mut app, -1);
+
+        assert_eq!(response["result"]["swap"]["changed"], true, "{response}");
+        let layout = &app.state.workspaces[0].tabs[0].layout;
+        assert_eq!(layout.pane_ids(), vec![ids[1], ids[0], ids[2]]);
+        assert_eq!(layout.focused(), ids[1]);
+
+        stack_move(&mut app, 1);
+        stack_move(&mut app, 1);
+        let layout = &app.state.workspaces[0].tabs[0].layout;
+        assert_eq!(layout.pane_ids(), vec![ids[0], ids[2], ids[1]]);
+        assert_eq!(layout.focused(), ids[1]);
+    }
+
+    #[tokio::test]
+    async fn pane_stack_move_stops_at_the_end_of_the_stack() {
+        let (mut app, ids) = app_with_focused_stack();
+        app.state.workspaces[0].tabs[0].layout.focus_pane(ids[2]);
+
+        let response = stack_move(&mut app, 1);
+
+        assert_eq!(response["result"]["swap"]["changed"], false, "{response}");
+        assert_eq!(response["result"]["swap"]["reason"], "no_neighbor");
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_ids(), ids);
+    }
+
+    #[test]
+    fn a_stripped_title_change_redraws_when_a_stack_is_visible() {
+        let mut app = test_app();
+        app.state.sidebar_agents = crate::config::AgentsSidebarConfig {
+            rows: vec![vec![crate::config::AgentSidebarToken::Agent]],
+            ..Default::default()
+        };
+        app.state.workspaces = vec![Workspace::test_new("titles")];
+        let changes = super::terminal_titles::TerminalTitleChanges {
+            raw_changed: true,
+            stripped_changed: true,
+        };
+        assert!(
+            !app.terminal_title_sidebar_changed(&changes),
+            "without a stack or a title token nothing shows the title"
+        );
+
+        app.state.workspaces[0].test_stack();
+
+        assert!(
+            app.terminal_title_sidebar_changed(&changes),
+            "stack title rows show the stripped title"
+        );
+    }
+
+    #[tokio::test]
+    async fn pane_stack_move_never_swaps_a_pane_outside_a_stack() {
+        // Two plain panes, one above the other: a directional swap would exchange
+        // them, and a stack move must not.
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("api-stack-move-plain");
+        let above = workspace.tabs[0].root_pane;
+        let below = workspace.test_split(ratatui::layout::Direction::Vertical);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let response = stack_move(&mut app, -1);
+
+        assert_eq!(response["result"]["swap"]["changed"], false, "{response}");
+        let layout = &app.state.workspaces[0].tabs[0].layout;
+        assert_eq!(layout.pane_ids(), vec![above, below]);
+        assert_eq!(layout.focused(), below);
+    }
+
+    #[tokio::test]
     async fn pane_split_request_applies_ratio() {
         let _guard = config_env_lock().lock().unwrap();
         let original_shell = std::env::var_os("SHELL");

@@ -6,7 +6,7 @@ use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
 
 use crate::events::AppEvent;
-use crate::layout::{Node, PaneId, TileLayout};
+use crate::layout::{Node, PaneId, PanePlacement, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
@@ -220,8 +220,10 @@ impl Tab {
         self.split_pane_with_runtime(
             self.layout.focused(),
             true,
-            direction,
-            None,
+            PanePlacement::Split {
+                direction,
+                ratio: None,
+            },
             rows,
             cols,
             cwd,
@@ -237,7 +239,7 @@ impl Tab {
         )
     }
 
-    /// Split `target` with a shell pane. Focus moves to the new pane only when
+    /// Place a new shell pane next to `target`. Focus moves to the new pane only when
     /// `focus_new_pane` is set; a spawn failure rolls the layout back without
     /// touching focus or its history.
     #[allow(clippy::too_many_arguments)]
@@ -245,8 +247,7 @@ impl Tab {
         &mut self,
         target: PaneId,
         focus_new_pane: bool,
-        direction: Direction,
-        ratio: Option<f32>,
+        placement: PanePlacement,
         rows: u16,
         cols: u16,
         cwd: Option<PathBuf>,
@@ -259,8 +260,7 @@ impl Tab {
         self.split_pane_with_runtime(
             target,
             focus_new_pane,
-            direction,
-            ratio,
+            placement,
             rows,
             cols,
             cwd,
@@ -273,15 +273,14 @@ impl Tab {
         )
     }
 
-    /// Split `target` with an argv-command pane. Same focus contract as
+    /// Place a new argv-command pane next to `target`. Same focus contract as
     /// `split_pane_shell`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn split_pane_argv(
         &mut self,
         target: PaneId,
         focus_new_pane: bool,
-        direction: Direction,
-        ratio: Option<f32>,
+        placement: PanePlacement,
         rows: u16,
         cols: u16,
         cwd: Option<PathBuf>,
@@ -294,8 +293,7 @@ impl Tab {
         self.split_pane_with_runtime(
             target,
             focus_new_pane,
-            direction,
-            ratio,
+            placement,
             rows,
             cols,
             cwd,
@@ -314,8 +312,7 @@ impl Tab {
         &mut self,
         target: PaneId,
         focus_new_pane: bool,
-        direction: Direction,
-        ratio: Option<f32>,
+        placement: PanePlacement,
         rows: u16,
         cols: u16,
         cwd: Option<PathBuf>,
@@ -326,10 +323,7 @@ impl Tab {
         launch_env: &PaneLaunchEnv,
         command: Option<SplitCommand<'_>>,
     ) -> std::io::Result<NewPane> {
-        let Some(new_id) = self
-            .layout
-            .split_pane(target, direction, ratio.unwrap_or(0.5))
-        else {
+        let Some(new_id) = self.layout.place_pane(target, placement) else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "split target pane is not in the layout",

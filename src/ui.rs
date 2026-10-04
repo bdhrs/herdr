@@ -20,7 +20,7 @@ pub(crate) use self::panes::popup_pane_rects;
 use self::panes::resize_popup_pane;
 pub(crate) use self::panes::{
     apply_pane_chrome, new_layout_terminal_sizes, new_pane_terminal_size, pane_inner_rect,
-    pane_is_scrolled_back, render_selection_highlight, NewPanePlacement,
+    pane_is_scrolled_back, render_selection_highlight, stack_border_title_span, NewPanePlacement,
 };
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, product_announcement_scroll_metrics,

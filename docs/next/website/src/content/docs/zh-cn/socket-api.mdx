@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| 窗格 | `pane.split`、`pane.stack`、`pane.stack_move`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -161,7 +161,7 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 {"id":"req_export","method":"layout.export","params":{"tab_id":"w1:t1"}}
 ```
 
-响应包含 `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id` 和 `root`。`root` 是由 `pane` 和 `split` 节点组成的 BSP 树。窗格节点可以包含 `pane_id`、`label`、`cwd` 和 argv `command`。分割节点使用 `direction` (`right` 或 `down`)、`ratio`、`first` 和 `second`。
+响应包含 `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id` 和 `root`。`root` 是由 `pane`、`split` 和 `stack` 节点组成的布局树。堆叠节点使用 `panes`(共享同一区域的窗格节点数组)和 `active`(显示终端的成员索引);其余成员折叠为单行标题。窗格节点可以包含 `pane_id`、`label`、`cwd` 和 argv `command`。分割节点使用 `direction` (`right` 或 `down`)、`ratio`、`first` 和 `second`。
 
 `layout.apply` 从声明式的树创建一个新标签页。提供 `tab_id` 时,Herdr 先创建替代标签页,再关闭旧标签页。它会恢复结构、标签、cwd、env 和可选的 argv 命令;不会保留活跃的 PTY、回滚内容或运行中的进程。
 

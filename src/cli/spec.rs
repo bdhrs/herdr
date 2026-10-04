@@ -554,6 +554,17 @@ fn pane_command() -> Command {
                 .arg(flag("no-focus")),
         )
         .subcommand(
+            Command::new("stack")
+                .about("Add a pane to a pane's stack")
+                .arg(Arg::new("pane_id").value_name("PANE_ID"))
+                .args(current_pane_args())
+                .arg(path_option("cwd", "PATH"))
+                .arg(env_option())
+                .arg(option("right-click", "TARGET").value_parser(["herdr", "pane"]))
+                .arg(flag("focus"))
+                .arg(flag("no-focus")),
+        )
+        .subcommand(
             Command::new("swap")
                 .about("Swap panes")
                 .arg(direction_option())

@@ -428,6 +428,10 @@ pub struct KeysConfig {
     pub swap_pane_up: BindingConfig,
     /// Swap the focused pane with the pane to the right. Default: "prefix+shift+l".
     pub swap_pane_right: BindingConfig,
+    /// Move the focused pane one position up in its stack. Default: "prefix+shift+up".
+    pub move_stack_pane_up: BindingConfig,
+    /// Move the focused pane one position down in its stack. Default: "prefix+shift+down".
+    pub move_stack_pane_down: BindingConfig,
     /// Cycle to the next pane. Default: "prefix+tab".
     pub cycle_pane_next: BindingConfig,
     /// Cycle to the previous pane. Default: "prefix+shift+tab".
@@ -438,6 +442,9 @@ pub struct KeysConfig {
     pub split_vertical: BindingConfig,
     /// Split pane horizontally (stacked). Default: "prefix+minus"
     pub split_horizontal: BindingConfig,
+    /// Add a pane to the focused pane's stack. Default: "prefix+shift+s"
+    #[serde(alias = "split_stacked")]
+    pub stack_pane: BindingConfig,
     /// Close the focused pane. Default: "prefix+x"
     pub close_pane: BindingConfig,
     /// Toggle zoom for the focused pane. Default: "prefix+z"
@@ -566,6 +573,10 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     swap_pane_right: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    move_stack_pane_up: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    move_stack_pane_down: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cycle_pane_next: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle_pane_previous: Option<BindingConfig>,
@@ -575,6 +586,8 @@ pub(crate) struct KeysConfigOverlay {
     split_vertical: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     split_horizontal: Option<BindingConfig>,
+    #[serde(alias = "split_stacked", skip_serializing_if = "Option::is_none")]
+    stack_pane: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     close_pane: Option<BindingConfig>,
     #[serde(alias = "fullscreen", skip_serializing_if = "Option::is_none")]
@@ -690,11 +703,14 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(swap_pane_down);
         apply_field!(swap_pane_up);
         apply_field!(swap_pane_right);
+        apply_field!(move_stack_pane_up);
+        apply_field!(move_stack_pane_down);
         apply_field!(cycle_pane_next);
         apply_field!(cycle_pane_previous);
         apply_field!(last_pane);
         apply_field!(split_vertical);
         apply_field!(split_horizontal);
+        apply_field!(stack_pane);
         apply_field!(close_pane);
         apply_field!(zoom);
         apply_field!(resize_mode);
@@ -795,11 +811,14 @@ impl KeysConfig {
         copy_effective_action_field!(swap_pane_down, keybinds.swap_pane_down);
         copy_effective_action_field!(swap_pane_up, keybinds.swap_pane_up);
         copy_effective_action_field!(swap_pane_right, keybinds.swap_pane_right);
+        copy_effective_action_field!(move_stack_pane_up, keybinds.move_stack_pane_up);
+        copy_effective_action_field!(move_stack_pane_down, keybinds.move_stack_pane_down);
         copy_effective_action_field!(cycle_pane_next, keybinds.cycle_pane_next);
         copy_effective_action_field!(cycle_pane_previous, keybinds.cycle_pane_previous);
         copy_effective_action_field!(last_pane, keybinds.last_pane);
         copy_effective_action_field!(split_vertical, keybinds.split_vertical);
         copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
+        copy_effective_action_field!(stack_pane, keybinds.stack_pane);
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
@@ -1164,11 +1183,14 @@ impl Default for KeysConfig {
             swap_pane_down: BindingConfig::one("prefix+shift+j"),
             swap_pane_up: BindingConfig::one("prefix+shift+k"),
             swap_pane_right: BindingConfig::one("prefix+shift+l"),
+            move_stack_pane_up: BindingConfig::one("prefix+shift+up"),
+            move_stack_pane_down: BindingConfig::one("prefix+shift+down"),
             cycle_pane_next: BindingConfig::one("prefix+tab"),
             cycle_pane_previous: BindingConfig::one("prefix+shift+tab"),
             last_pane: BindingConfig::empty(),
             split_vertical: BindingConfig::one("prefix+v"),
             split_horizontal: BindingConfig::one("prefix+minus"),
+            stack_pane: BindingConfig::one("prefix+shift+s"),
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
             resize_mode: BindingConfig::one("prefix+r"),

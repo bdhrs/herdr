@@ -30,6 +30,7 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => pane_rename(&args[1..]),
         "input" => pane_input(&args[1..]),
         "split" => pane_split(&args[1..]),
+        "stack" => pane_stack(&args[1..]),
         "swap" => pane_swap(&args[1..]),
         "move" => pane_move(&args[1..]),
         "close" => pane_close(&args[1..]),
@@ -625,6 +626,47 @@ fn pane_split(args: &[String]) -> std::io::Result<i32> {
     };
 
     super::runtime::pane_split(params)
+}
+
+fn pane_stack(args: &[String]) -> std::io::Result<i32> {
+    let env_pane_id = super::target::caller_pane_id();
+    let params = match parse_pane_stack_args(args, env_pane_id.as_deref()) {
+        Ok(params) => params,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
+    super::runtime::pane_stack(params)
+}
+
+const PANE_STACK_USAGE: &str = "usage: herdr pane stack [<pane_id>|--pane ID|--current] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]";
+
+/// Stacking takes every split option except a direction and a ratio, so it reuses
+/// the split parser rather than keeping a second copy of the shared options in step.
+fn parse_pane_stack_args(
+    args: &[String],
+    env_pane_id: Option<&str>,
+) -> Result<crate::api::schema::PaneStackParams, String> {
+    if args
+        .iter()
+        // `--ratio=0.5` must be caught too, not reported later as an unknown option.
+        .any(|arg| matches!(arg.split('=').next(), Some("--direction" | "--ratio")))
+    {
+        return Err(PANE_STACK_USAGE.into());
+    }
+    let mut split_args = args.to_vec();
+    split_args.extend(["--direction".to_string(), "right".to_string()]);
+    let split = parse_pane_split_args(&split_args, env_pane_id)?;
+    Ok(crate::api::schema::PaneStackParams {
+        workspace_id: split.workspace_id,
+        target_pane_id: split.target_pane_id,
+        cwd: split.cwd,
+        focus: split.focus,
+        right_click: split.right_click,
+        env: split.env,
+    })
 }
 
 fn parse_pane_split_args(
@@ -1689,6 +1731,9 @@ fn print_pane_help() {
     eprintln!(
         "  herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]"
     );
+    eprintln!(
+        "  herdr pane stack [<pane_id>|--pane ID|--current] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]"
+    );
     eprintln!("  herdr pane swap --direction left|right|up|down [--pane ID|--current]");
     eprintln!("  herdr pane swap --source-pane ID --target-pane ID");
     eprintln!("  herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]");
@@ -1725,6 +1770,32 @@ mod tests {
         assert_eq!(params.direction, crate::api::schema::SplitDirection::Right);
         assert_eq!(params.ratio, Some(0.333));
         assert_eq!(params.right_click, PaneRightClickTarget::Herdr);
+    }
+
+    #[test]
+    fn parse_pane_stack_args_shares_the_split_options_without_a_direction() {
+        let params = parse_pane_stack_args(
+            &args(&["issue-1", "--cwd", "/tmp", "--env", "A=1", "--focus"]),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(params.target_pane_id, Some("issue-1".into()));
+        assert_eq!(params.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(params.env.get("A").map(String::as_str), Some("1"));
+        assert!(params.focus);
+        for rejected in [
+            args(&["--direction", "right"]),
+            args(&["--ratio", "0.5"]),
+            args(&["--direction=right"]),
+            args(&["--ratio=0.5"]),
+        ] {
+            assert_eq!(
+                parse_pane_stack_args(&rejected, None).unwrap_err(),
+                PANE_STACK_USAGE,
+                "{rejected:?} must get the stack usage, not a split error"
+            );
+        }
     }
 
     #[test]

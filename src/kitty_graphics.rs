@@ -327,6 +327,11 @@ fn collect_visible_placements(
     );
     let mut placements = Vec::new();
     for info in surface.pane_infos {
+        // A collapsed stack member has no content rows. Graphics bypass the cell
+        // buffer, so without this its images would land on its title row.
+        if info.inner_rect.is_empty() {
+            continue;
+        }
         let runtime = match app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             Some(rt) => rt,
             None => {

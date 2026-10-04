@@ -11,6 +11,17 @@ pub(crate) struct TerminalTitleChanges {
 
 impl App {
     pub(crate) fn terminal_title_sidebar_changed(&self, changes: &TerminalTitleChanges) -> bool {
+        // Stack title rows fall back to the stripped terminal title, and retained
+        // renders only patch terminal content, so a visible stack needs a full render.
+        if changes.stripped_changed
+            && self
+                .state
+                .workspaces
+                .iter()
+                .any(|ws| ws.active_tab().is_some_and(|tab| tab.layout.has_stack()))
+        {
+            return true;
+        }
         let config = &self.state.sidebar_agents;
         std::iter::once(&config.rows)
             .chain(config.rows_by_agent.values())

@@ -2407,9 +2407,32 @@ impl TerminalState {
         }
     }
 
+    /// The pane's display name.
+    ///
+    /// The name this pane goes by, wherever a pane is named — its own chrome, a stack
+    /// title row, the agent panel.
+    ///
+    /// A title the agent pushed wins, then an explicit rename, then the agent session's
+    /// name, then the terminal's own title. That last one matters: an agent's own
+    /// `/rename` arrives as a terminal title, so leaving it out makes a renamed session
+    /// look unnamed. Keep every server-side pane-naming surface on this one function;
+    /// the two that spelled the chain out separately drifted apart immediately.
+    pub(crate) fn display_name(&self) -> Option<String> {
+        self.effective_title()
+            .or_else(|| self.manual_label.clone())
+            .or_else(|| self.agent_name.clone())
+            .or_else(|| self.terminal_title_stripped())
+    }
+
+    /// A title the agent itself pushed wins: it is live and specific, which is why it
+    /// also outranks a manual rename. Then an explicit rename, then the agent session's
+    /// name — `agent_name` is chosen by a human or by `herdr agent start`, so it says
+    /// far more than the bare agent type it now precedes.
     pub fn border_label(&self, show_agent_labels: bool) -> Option<String> {
-        self.effective_title().or_else(|| {
-            self.manual_label.clone().or_else(|| {
+        self.effective_title()
+            .or_else(|| self.manual_label.clone())
+            .or_else(|| self.agent_name.clone())
+            .or_else(|| {
                 show_agent_labels
                     .then(|| {
                         self.effective_display_agent()
@@ -2417,7 +2440,6 @@ impl TerminalState {
                     })
                     .flatten()
             })
-        })
     }
 
     fn recompute_effective_state(
@@ -4253,6 +4275,45 @@ mod tests {
         assert_eq!(terminal.detected_agent, Some(Agent::Grok));
         assert_eq!(terminal.effective_agent_label(), Some("grok"));
         assert_eq!(terminal.state, AgentState::Working);
+    }
+
+    #[test]
+    fn border_label_uses_the_agent_session_name_over_the_agent_type() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        assert_eq!(terminal.border_label(true).as_deref(), Some("claude"));
+
+        terminal.set_agent_name("reviewer".into());
+        assert_eq!(
+            terminal.border_label(true).as_deref(),
+            Some("reviewer"),
+            "a named agent session names the pane"
+        );
+        assert_eq!(
+            terminal.border_label(false).as_deref(),
+            Some("reviewer"),
+            "the name is the pane's identity, not an agent-label decoration"
+        );
+
+        terminal.set_manual_label("mine".into());
+        assert_eq!(
+            terminal.border_label(true).as_deref(),
+            Some("mine"),
+            "an explicit rename still wins"
+        );
+    }
+
+    #[test]
+    fn display_name_falls_back_to_the_stripped_terminal_title() {
+        let mut terminal = test_terminal();
+        terminal.set_terminal_title(Some("✳ xyz".into()));
+        assert_eq!(terminal.display_name().as_deref(), Some("xyz"));
+
+        terminal.set_agent_name("reviewer".into());
+        assert_eq!(terminal.display_name().as_deref(), Some("reviewer"));
+
+        terminal.set_manual_label("mine".into());
+        assert_eq!(terminal.display_name().as_deref(), Some("mine"));
     }
 
     #[test]

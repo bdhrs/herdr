@@ -34,6 +34,33 @@ pub struct PaneSplitParams {
     pub env: HashMap<String, String>,
 }
 
+/// Add a new shell pane to the target pane's stack, turning a plain pane into a
+/// two-member stack. Targeting follows `pane.split`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneStackParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub focus: bool,
+    #[serde(default)]
+    pub right_click: PaneRightClickTarget,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+}
+
+/// Move a pane `delta` places within its own stack: negative toward the top. The
+/// pane never leaves its stack; a move past either end changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneStackMoveParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    pub delta: i32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInputSetParams {
     pub pane_id: String,
@@ -188,6 +215,11 @@ pub enum LayoutNode {
         ratio: f32,
         first: Box<LayoutNode>,
         second: Box<LayoutNode>,
+    },
+    /// Panes sharing one region, one visible at a time. Members must be panes.
+    Stack {
+        panes: Vec<LayoutNode>,
+        active: usize,
     },
 }
 

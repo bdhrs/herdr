@@ -460,14 +460,18 @@ impl HeadlessServer {
                         *cell_size,
                     );
                     if layout.pane_infos.iter().any(|pane| {
-                        self.app
-                            .state
-                            .runtime_for_pane_in_workspace(
-                                &self.app.terminal_runtimes,
-                                target.workspace_index,
-                                pane.id,
-                            )
-                            .is_some_and(|runtime| runtime.synchronized_output_active())
+                        // A collapsed stack member is not drawn, so it cannot hold the
+                        // resize back.
+                        !pane.stack.is_some_and(|slot| slot.collapsed)
+                            && self
+                                .app
+                                .state
+                                .runtime_for_pane_in_workspace(
+                                    &self.app.terminal_runtimes,
+                                    target.workspace_index,
+                                    pane.id,
+                                )
+                                .is_some_and(|runtime| runtime.synchronized_output_active())
                     }) {
                         continue;
                     }

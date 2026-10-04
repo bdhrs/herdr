@@ -6,6 +6,8 @@ mod native_graphics;
 mod pane_move_tests;
 #[path = "pane_graphics.rs"]
 mod retained_graphics_tests;
+#[path = "stacks.rs"]
+mod stacks_tests;
 #[path = "surface_delta.rs"]
 mod surface_delta_tests;
 #[path = "surface_interest.rs"]

@@ -310,7 +310,9 @@ pub(super) fn render_pane_surface(
                 pane.id,
             ) {
                 let (synchronized, epoch) = runtime.synchronized_output_state();
-                if synchronized {
+                // A collapsed stack member is not drawn, so its output cannot tear
+                // this frame and must not hold it back.
+                if synchronized && !pane_is_collapsed(pane) {
                     return Err(SurfaceRenderDeferred::Synchronized);
                 }
                 let revision = runtime.content_seq();
@@ -344,9 +346,19 @@ pub(super) fn render_pane_surface(
     let panes = target
         .map(|target| {
             let workspace_index = target.workspace_index;
-            layout
+            // Clients hit-test panes in list order and a stack's visible member spans
+            // its whole region, so collapsed members go first or their title rows could
+            // never be clicked.
+            let collapsed = layout
                 .pane_infos
                 .iter()
+                .filter(|pane| pane_is_collapsed(pane));
+            let shown = layout
+                .pane_infos
+                .iter()
+                .filter(|pane| !pane_is_collapsed(pane));
+            collapsed
+                .chain(shown)
                 .filter_map(|pane| {
                     app.public_pane_id(workspace_index, pane.id).map(|pane_id| {
                         let runtime = app.state.runtime_for_pane_in_workspace(
@@ -409,6 +421,19 @@ pub(super) fn render_pane_surface(
         .iter()
         .map(|pane| pane.rect)
         .collect::<Vec<_>>();
+    let stack_titles = target
+        .and_then(|target| app.state.workspaces.get(target.workspace_index))
+        .map(|ws| {
+            layout
+                .pane_infos
+                .iter()
+                .filter_map(|pane| {
+                    let (start, end) = crate::ui::stack_border_title_span(&app.state, ws, pane)?;
+                    Some((pane.stack?.header_rect.y, start, end))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let splits = layout
         .split_borders
         .iter()
@@ -418,7 +443,8 @@ pub(super) fn render_pane_surface(
                 app.state.pane_borders.draws_borders(),
                 app.state.pane_gaps,
                 &pane_frames,
-            )?;
+            )
+            .and_then(|hit| trim_hit_around_stack_titles(hit, &stack_titles))?;
             let direction = match split.direction {
                 ratatui::layout::Direction::Horizontal => {
                     protocol::PaneSurfaceSplitDirection::Horizontal
@@ -450,6 +476,12 @@ pub(super) fn render_pane_surface(
             graphics_delivery,
             client_id,
         );
+    let hidden_stack_members = layout
+        .pane_infos
+        .iter()
+        .filter(|pane| pane_is_collapsed(pane))
+        .map(|pane| pane.id)
+        .collect::<Vec<_>>();
     if let Some(target) = target {
         for (&pane_id, &(epoch, _)) in &content_revisions_before {
             if let Some(runtime) = app.state.runtime_for_pane_in_workspace(
@@ -458,6 +490,9 @@ pub(super) fn render_pane_surface(
                 pane_id,
             ) {
                 let (synchronized, after_epoch) = runtime.synchronized_output_state();
+                if hidden_stack_members.contains(&pane_id) {
+                    continue;
+                }
                 if synchronized {
                     return Err(SurfaceRenderDeferred::Synchronized);
                 }
@@ -568,6 +603,33 @@ fn client_popup_size(size: crate::popup_size::PopupSize) -> protocol::ClientShel
             protocol::ClientShellPopupSize::Percent(percent)
         }
     }
+}
+
+fn pane_is_collapsed(pane: &crate::layout::PaneInfo) -> bool {
+    pane.stack.is_some_and(|slot| slot.collapsed)
+}
+
+/// A stack's first title row sits on its region's top border, which is the same row a
+/// split above it uses as its resize handle. The title text has to stay clickable to
+/// focus that member, so the handle keeps only the part of the row beside it.
+fn trim_hit_around_stack_titles(hit: Rect, titles: &[(u16, u16, u16)]) -> Option<Rect> {
+    let mut hit = hit;
+    for &(row, start, end) in titles {
+        if row < hit.y || row >= hit.bottom() || end <= hit.x || start >= hit.right() {
+            continue;
+        }
+        let left = start.saturating_sub(hit.x);
+        let right = hit.right().saturating_sub(end);
+        hit = if right >= left {
+            Rect::new(end, hit.y, right, hit.height)
+        } else {
+            Rect::new(hit.x, hit.y, left, hit.height)
+        };
+        if hit.width == 0 {
+            return None;
+        }
+    }
+    Some(hit)
 }
 
 fn split_hit_rect(

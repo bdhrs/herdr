@@ -298,10 +298,20 @@ pub(super) fn agent_row(
             machine,
             workspace: &workspace.label,
             tab: tab_label,
-            pane: agent
-                .title
-                .as_deref()
-                .or_else(|| pane.and_then(|pane| pane.label.as_deref())),
+            // Same order as the server's pane display name: pushed title, rename,
+            // agent session name, then the terminal's own title, which is where an
+            // agent's own `/rename` arrives.
+            // The agent token may already show one of these names, so skip a
+            // candidate that repeats it rather than showing it twice.
+            pane: [
+                agent.title.as_deref(),
+                pane.and_then(|pane| pane.label.as_deref()),
+                agent.name.as_deref(),
+                agent.terminal_title_stripped.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .find(|candidate| Some(*candidate) != agent_label),
             agent_label,
             terminal_title: agent.terminal_title.as_deref(),
             terminal_title_stripped: agent.terminal_title_stripped.as_deref(),

@@ -9,7 +9,7 @@ use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version.
-pub(super) const SNAPSHOT_VERSION: u32 = 3;
+pub(super) const SNAPSHOT_VERSION: u32 = 4;
 
 /// Serializable snapshot of the entire herdr session.
 #[derive(Serialize, Deserialize)]
@@ -144,6 +144,10 @@ pub enum LayoutSnapshot {
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
+    Stack {
+        panes: Vec<u32>,
+        active: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -256,6 +260,7 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
         LayoutSnapshot::Split { first, second, .. } => {
             first_pane_id_in_layout(first).or_else(|| first_pane_id_in_layout(second))
         }
+        LayoutSnapshot::Stack { panes, .. } => panes.first().copied(),
     }
 }
 
@@ -478,6 +483,10 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
             first: Box::new(capture_node(first)),
             second: Box::new(capture_node(second)),
         },
+        Node::Stack { panes, active } => LayoutSnapshot::Stack {
+            panes: panes.iter().map(|id| id.raw()).collect(),
+            active: *active,
+        },
     }
 }
 
@@ -590,7 +599,7 @@ mod tests {
     fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
         match &tab.layout {
             LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
-            LayoutSnapshot::Pane(_) => None,
+            LayoutSnapshot::Pane(_) | LayoutSnapshot::Stack { .. } => None,
         }
     }
 
@@ -782,7 +791,7 @@ mod tests {
     fn current_session_fixture_parses() {
         let snap = parse_snapshot(session_fixture("current-herdr")).unwrap();
 
-        assert_eq!(snap.version, 3);
+        assert_eq!(snap.version, 4);
         assert_eq!(snap.workspaces.len(), 2);
         assert_eq!(snap.active, Some(0));
         assert_eq!(snap.selected, 0);
@@ -799,11 +808,89 @@ mod tests {
     fn current_dev_session_fixture_parses_additive_fields() {
         let snap = parse_snapshot(session_fixture("current-herdr-dev")).unwrap();
 
-        assert_eq!(snap.version, 3);
+        assert_eq!(snap.version, 4);
         assert_eq!(snap.workspaces.len(), 2);
         assert_eq!(snap.sidebar_section_split, Some(0.4));
         assert_eq!(snap.workspaces[0].active_tab, 1);
         assert_eq!(snap.workspaces[1].tabs[0].panes.len(), 2);
+        // The fixture's second workspace keeps its two panes in a stack, so the
+        // current format's stack node is exercised by the fixture every run.
+        let LayoutSnapshot::Stack { panes, active } = &snap.workspaces[1].tabs[0].layout else {
+            panic!("expected a stack layout");
+        };
+        assert_eq!(panes.len(), 2);
+        assert_eq!(*active, 1, "the second member is the visible one");
+    }
+
+    #[test]
+    fn older_snapshot_without_stacks_still_parses() {
+        // Version 3 is the same format without the stack node; a session saved by
+        // an older build must keep loading now that the version is 4.
+        let json = serde_json::json!({
+            "version": 3,
+            "workspaces": [{
+                "identity_cwd": "/home/test/projects/old",
+                "tabs": [{
+                    "layout": {"Pane": 0},
+                    "panes": {},
+                    "zoomed": false,
+                }],
+            }],
+            "active": 0,
+            "selected": 0,
+        });
+        let snap = parse_snapshot(&json.to_string()).unwrap();
+
+        assert_eq!(snap.version, 3);
+        assert!(matches!(
+            snap.workspaces[0].tabs[0].layout,
+            LayoutSnapshot::Pane(_)
+        ));
+    }
+
+    #[test]
+    fn round_trip_stack_layout_snapshot() {
+        let layout = LayoutSnapshot::Split {
+            direction: DirectionSnapshot::Horizontal,
+            ratio: 0.5,
+            first: Box::new(LayoutSnapshot::Pane(0)),
+            second: Box::new(LayoutSnapshot::Stack {
+                panes: vec![1, 2, 3],
+                active: 2,
+            }),
+        };
+        let json = serde_json::to_string(&layout).unwrap();
+        let restored: LayoutSnapshot = serde_json::from_str(&json).unwrap();
+
+        let LayoutSnapshot::Split { second, .. } = restored else {
+            panic!("expected split");
+        };
+        let LayoutSnapshot::Stack { panes, active } = *second else {
+            panic!("expected stack");
+        };
+        assert_eq!(panes, vec![1, 2, 3]);
+        assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn capture_node_records_stack_membership_and_active_member() {
+        use crate::layout::PaneId;
+
+        let panes: Vec<PaneId> = (1..=3).map(PaneId::from_raw).collect();
+        let node = Node::Stack {
+            panes: panes.clone(),
+            active: 1,
+        };
+
+        let LayoutSnapshot::Stack {
+            panes: captured,
+            active,
+        } = capture_node(&node)
+        else {
+            panic!("expected stack snapshot");
+        };
+        assert_eq!(captured, vec![1, 2, 3]);
+        assert_eq!(active, 1);
     }
 
     #[test]

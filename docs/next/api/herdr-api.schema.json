@@ -2320,6 +2320,32 @@
                 "second"
               ],
               "type": "object"
+            },
+            {
+              "description": "Panes sharing one region, one visible at a time. Members must be panes.",
+              "properties": {
+                "active": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "panes": {
+                  "items": {
+                    "$ref": "#/schemas/request/$defs/LayoutNode"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "stack",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "panes",
+                "active"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -3260,6 +3286,63 @@
           "required": [
             "direction"
           ],
+          "type": "object"
+        },
+        "PaneStackMoveParams": {
+          "description": "Move a pane `delta` places within its own stack: negative toward the top. The\npane never leaves its stack; a move past either end changes nothing.",
+          "properties": {
+            "delta": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "delta"
+          ],
+          "type": "object"
+        },
+        "PaneStackParams": {
+          "description": "Add a new shell pane to the target pane's stack, turning a plain pane into a\ntwo-member stack. Targeting follows `pane.split`.",
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "right_click": {
+              "$ref": "#/schemas/request/$defs/PaneRightClickTarget",
+              "default": "herdr"
+            },
+            "target_pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "PaneSwapParams": {
@@ -5457,6 +5540,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneSwapParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.stack",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneStackParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.stack_move",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneStackMoveParams"
             }
           },
           "required": [
@@ -7769,6 +7884,32 @@
                 "ratio",
                 "first",
                 "second"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Panes sharing one region, one visible at a time. Members must be panes.",
+              "properties": {
+                "active": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "panes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/LayoutNode"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "stack",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "panes",
+                "active"
               ],
               "type": "object"
             }

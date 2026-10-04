@@ -12,9 +12,9 @@ use crate::api::schema::{
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneSendTextParams, PaneSplitParams, PaneStackMoveParams, PaneStackParams, PaneSwapParams,
+    PaneSwapReason, PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode,
+    PaneZoomParams, PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -32,6 +32,39 @@ use super::responses::{encode_error, encode_success};
 
 impl App {
     pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> String {
+        let direction = match params.direction {
+            crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
+            crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
+        };
+        self.handle_new_pane(
+            id,
+            PaneStackParams {
+                workspace_id: params.workspace_id,
+                target_pane_id: params.target_pane_id,
+                cwd: params.cwd,
+                focus: params.focus,
+                right_click: params.right_click,
+                env: params.env,
+            },
+            crate::layout::PanePlacement::Split {
+                direction,
+                ratio: params.ratio,
+            },
+        )
+    }
+
+    pub(super) fn handle_pane_stack(&mut self, id: String, params: PaneStackParams) -> String {
+        self.handle_new_pane(id, params, crate::layout::PanePlacement::Stacked)
+    }
+
+    /// Create a pane next to a target pane. `params` carries what splitting and
+    /// stacking have in common; `placement` says which one this is.
+    fn handle_new_pane(
+        &mut self,
+        id: String,
+        params: PaneStackParams,
+        placement: crate::layout::PanePlacement,
+    ) -> String {
         let target = if let Some(target_pane_id) = params.target_pane_id.as_deref() {
             self.parse_pane_id(target_pane_id)
         } else if let Some(workspace_id) = params.workspace_id.as_deref() {
@@ -52,18 +85,20 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        let direction = match params.direction {
-            crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
-            crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
-        };
-        let (rows, cols) = self
-            .state
-            .new_pane_size(crate::ui::NewPanePlacement::Split {
+        let (rows, cols) = self.state.new_pane_size(match placement {
+            crate::layout::PanePlacement::Split { direction, ratio } => {
+                crate::ui::NewPanePlacement::Split {
+                    ws_idx,
+                    target: target_pane_id,
+                    direction,
+                    ratio: ratio.unwrap_or(0.5),
+                }
+            }
+            crate::layout::PanePlacement::Stacked => crate::ui::NewPanePlacement::Stacked {
                 ws_idx,
                 target: target_pane_id,
-                direction,
-                ratio: params.ratio.unwrap_or(0.5),
-            });
+            },
+        });
         let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
             let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
             Some(self.resolve_new_terminal_cwd(follow_cwd))
@@ -77,8 +112,23 @@ impl App {
             return encode_error(id, "pane_not_found", "pane not found");
         };
         let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode);
-        let split_result = match params.ratio {
-            Some(ratio) => ws.split_pane_with_ratio(
+        let split_result = match placement {
+            crate::layout::PanePlacement::Stacked => ws.stack_pane(
+                target_pane_id,
+                rows,
+                cols,
+                split_cwd,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                shell_config,
+                extra_env,
+                params.focus,
+            ),
+            crate::layout::PanePlacement::Split {
+                direction,
+                ratio: Some(ratio),
+            } => ws.split_pane_with_ratio(
                 target_pane_id,
                 direction,
                 ratio,
@@ -92,7 +142,10 @@ impl App {
                 extra_env,
                 params.focus,
             ),
-            None => ws.split_pane(
+            crate::layout::PanePlacement::Split {
+                direction,
+                ratio: None,
+            } => ws.split_pane(
                 target_pane_id,
                 direction,
                 rows,
@@ -767,6 +820,53 @@ impl App {
                     focused_pane_id,
                     layout,
                 },
+            },
+        )
+    }
+
+    pub(super) fn handle_pane_stack_move(
+        &mut self,
+        id: String,
+        params: PaneStackMoveParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
+            return encode_error(id, "pane_not_found", "pane not found");
+        };
+        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+            return encode_error(id, "pane_not_found", "pane not found");
+        };
+        // Only the list neighbour is a valid target, and there is deliberately no
+        // directional fallback: a geometric swap at the ends of a stack throws the pane
+        // out of it instead of reordering.
+        let neighbor = self.state.workspaces[ws_idx].tabs[tab_idx]
+            .layout
+            .stack_neighbor(pane_id, params.delta as isize);
+        let source_public_id = self.public_pane_id(ws_idx, pane_id).unwrap_or_default();
+        let Some(neighbor) = neighbor else {
+            let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
+                return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            };
+            return encode_success(
+                id,
+                ResponseResult::PaneSwap {
+                    swap: PaneSwapResult {
+                        changed: false,
+                        reason: Some(PaneSwapReason::NoNeighbor),
+                        source_pane_id: source_public_id,
+                        target_pane_id: None,
+                        focused_pane_id: layout.focused_pane_id.clone(),
+                        layout,
+                    },
+                },
+            );
+        };
+        self.handle_pane_swap(
+            id,
+            PaneSwapParams {
+                pane_id: None,
+                direction: None,
+                source_pane_id: Some(source_public_id),
+                target_pane_id: self.public_pane_id(ws_idx, neighbor),
             },
         )
     }

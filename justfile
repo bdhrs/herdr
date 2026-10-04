@@ -1,4 +1,7 @@
 # herdr task runner
+
+# Fork-local recipes, if any. `.local/` is gitignored, so this is a no-op upstream.
+import? '.local/justfile'
 set windows-shell := ["cmd.exe", "/d", "/s", "/c"]
 
 python := if os() == "windows" { "python" } else { "python3" }

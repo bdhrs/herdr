@@ -209,15 +209,18 @@ struct RetainedRecipientUpdate {
 
 fn has_synchronized_pane(app: &app::App, surface: &protocol::PaneSurfaceFrame) -> bool {
     surface.panes.iter().any(|pane| {
-        app.parse_pane_id(&pane.pane_id)
-            .and_then(|(workspace_index, pane_id)| {
-                app.state.runtime_for_pane_in_workspace(
-                    &app.terminal_runtimes,
-                    workspace_index,
-                    pane_id,
-                )
-            })
-            .is_some_and(|runtime| runtime.synchronized_output_active())
+        // A collapsed stack member is not drawn, so its output cannot tear the frame.
+        pane.inner_rect.height > 0
+            && app
+                .parse_pane_id(&pane.pane_id)
+                .and_then(|(workspace_index, pane_id)| {
+                    app.state.runtime_for_pane_in_workspace(
+                        &app.terminal_runtimes,
+                        workspace_index,
+                        pane_id,
+                    )
+                })
+                .is_some_and(|runtime| runtime.synchronized_output_active())
     })
 }
 
@@ -325,7 +328,9 @@ impl HeadlessServer {
                 width = width.max(pane.inner_rect.width);
                 height = height.max(pane.inner_rect.height);
             }
-            let Some(public_pane_id) = public_pane_id else {
+            // A collapsed stack member has no content rows to patch; collecting one
+            // would paint its hidden terminal over its title row.
+            let Some(public_pane_id) = public_pane_id.filter(|_| width > 0 && height > 0) else {
                 continue;
             };
             let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {

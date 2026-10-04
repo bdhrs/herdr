@@ -826,3 +826,36 @@ fn resize_mode_reuses_endpoint_resize_and_stays_active_until_done() {
     assert!(state.handle_input_bytes(b"\r").actions.is_empty());
     assert_eq!(state.mode, ClientShellMode::Terminal);
 }
+
+#[test]
+fn stack_keybindings_send_the_stack_requests_for_the_focused_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+
+    let mut prefixed = |bytes: &[u8]| {
+        assert!(state.handle_input_bytes(&[0x02]).actions.is_empty());
+        let outcome = state.handle_input_bytes(bytes);
+        let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+            panic!("expected one endpoint action: {:?}", outcome.actions);
+        };
+        request.method.clone()
+    };
+
+    match prefixed(b"S") {
+        crate::api::schema::Method::PaneStack(params) => {
+            assert_eq!(params.workspace_id.as_deref(), Some("ws_1"));
+            assert_eq!(params.target_pane_id.as_deref(), Some("pane_1"));
+            assert!(params.focus);
+        }
+        other => panic!("expected pane.stack, got {other:?}"),
+    }
+    for (bytes, delta) in [(b"\x1b[1;2A" as &[u8], -1), (b"\x1b[1;2B", 1)] {
+        match prefixed(bytes) {
+            crate::api::schema::Method::PaneStackMove(params) => {
+                assert_eq!(params.pane_id.as_deref(), Some("pane_1"));
+                assert_eq!(params.delta, delta);
+            }
+            other => panic!("expected pane.stack_move, got {other:?}"),
+        }
+    }
+}

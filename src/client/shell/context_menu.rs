@@ -66,6 +66,7 @@ impl ClientContextMenuOverlay {
                 items.extend([
                     item("Split right", Action::SplitRight),
                     item("Split down", Action::SplitDown),
+                    item("Stack", Action::Stack),
                     item("Zoom", Action::Zoom),
                     item(
                         if *right_click_passthrough {
@@ -429,6 +430,17 @@ impl ClientShellState {
                     outcome,
                 );
             }
+            ClientContextMenuAction::Stack => self.push_endpoint_method(
+                Method::PaneStack(crate::api::schema::PaneStackParams {
+                    workspace_id: Some(workspace_id),
+                    target_pane_id: Some(pane_id),
+                    cwd: None,
+                    focus: true,
+                    right_click: Default::default(),
+                    env: Default::default(),
+                }),
+                outcome,
+            ),
             ClientContextMenuAction::Zoom => self.push_endpoint_method(
                 Method::PaneZoom(PaneZoomParams {
                     pane_id: Some(pane_id),
